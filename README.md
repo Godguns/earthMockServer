@@ -1,90 +1,134 @@
 # earthMockServer
 
-基于 `Python + FastAPI + PostgreSQL + SQLAlchemy` 的生活模拟 / 虚拟社会游戏后端初始架构。
+`earthMockServer` is the FastAPI backend for the Earth Online prototype.
+It currently provides:
 
-当前已经落地的能力：
+- user register / login / JWT auth
+- persona profile binding and storage
+- notification + chat message event model
+- random NPC push simulation
+- event-triggered message creation
 
-- 用户注册、登录、JWT 鉴权
-- 人格设定存储接口
-- 可同时服务“通知中心”和“聊天流”的消息事件模型
-- 支持随机 NPC 推送和特定事件触发推送
-- 内置可替换的 AI 消息生成服务占位层
+## Stack
 
-## 项目结构
+- Python 3.11
+- FastAPI
+- SQLAlchemy
+- PostgreSQL
+- APScheduler
 
-```text
-app/
-  api/           FastAPI 路由与依赖
-  core/          配置与安全
-  db/            数据库连接与初始化
-  models/        SQLAlchemy 模型
-  schemas/       Pydantic 请求/响应模型
-  services/      业务逻辑与调度
-tests/           最小测试
-```
+## Local development
 
-## 快速开始
-
-1. 启动 PostgreSQL
+### 1. Start PostgreSQL
 
 ```bash
-docker compose up -d
+docker compose up -d postgres
 ```
 
-2. 创建环境变量
+### 2. Prepare env
 
 ```bash
-copy .env.example .env
+cp .env.example .env
 ```
 
-3. 安装依赖
+If you run the app locally outside Docker, change `DATABASE_URL` in `.env`
+from `postgres` to `localhost`.
+
+### 3. Install dependencies
 
 ```bash
 pip install -e .[dev]
 ```
 
-4. 启动服务
+### 4. Start server
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-服务启动后会自动建表。
+The API will be available at:
 
-## 核心接口
+```text
+http://127.0.0.1:8000/api/v1
+```
 
-### 认证
+## Docker deployment
+
+This project can run as a complete Docker Compose stack with PostgreSQL and
+the FastAPI app together.
+
+### 1. Prepare env
+
+```bash
+cp .env.example .env
+```
+
+Before deployment, update at least:
+
+- `SECRET_KEY`
+- `CORS_ORIGINS`
+- `DATABASE_URL` if you change database credentials
+
+Inside Docker, the database host is `postgres`, not `localhost`.
+
+### 2. Build and start
+
+```bash
+docker compose up -d --build
+```
+
+### 3. Check status
+
+```bash
+docker compose ps
+docker compose logs -f app
+```
+
+### 4. API address
+
+By default, the backend is exposed on:
+
+```text
+http://YOUR_SERVER_IP:3002/api/v1
+```
+
+Health check:
+
+```text
+http://YOUR_SERVER_IP:3002/api/v1/health
+```
+
+### 5. Stop services
+
+```bash
+docker compose down
+```
+
+If you also want to remove PostgreSQL data:
+
+```bash
+docker compose down -v
+```
+
+## Main endpoints
+
+### Auth
 
 - `POST /api/v1/auth/register`
 - `POST /api/v1/auth/login`
 - `GET /api/v1/auth/me`
 
-### 人格设定
+### Persona
 
 - `GET /api/v1/persona/me`
 - `PUT /api/v1/persona/me`
+- `PUT /api/v1/persona/bind`
 
-前端可以将人物设定、说话风格、喜欢的话题、边界、原始 JSON 配置等一起传入 `raw_settings` 和结构化字段中。
-
-### 消息系统
+### Messages
 
 - `GET /api/v1/messages`
+- `GET /api/v1/messages/poll`
+- `GET /api/v1/messages/stream`
 - `POST /api/v1/messages/trigger/random`
 - `POST /api/v1/messages/trigger/event`
 - `POST /api/v1/messages/{message_id}/read`
-
-说明：
-
-- `channel=notification` 用于前端通知中心
-- `channel=chat` 用于聊天流
-- 随机推送会自动同时写入两个渠道
-- 事件推送支持立即投递或通过 `scheduled_for` 延迟投递
-
-## 后续建议
-
-这版是一个可继续扩展的第一阶段骨架。下一步很适合继续补：
-
-- Alembic 数据迁移
-- 真正的 LLM/NPC 对话生成接入
-- 会话 / 好感度 / 世界状态等游戏系统
-- WebSocket 或 SSE 实时推送
