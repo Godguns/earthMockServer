@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 
 from pydantic import Field, field_validator
@@ -7,7 +8,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        enable_decoding=False,
+    )
 
     app_name: str = "Earth Mock Server"
     api_v1_prefix: str = "/api/v1"
@@ -29,6 +35,11 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
         if isinstance(value, str):
+            value = value.strip()
+            if value.startswith("["):
+                parsed_value = json.loads(value)
+                if isinstance(parsed_value, list):
+                    return [str(item).strip() for item in parsed_value if str(item).strip()]
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 

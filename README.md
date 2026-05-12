@@ -66,7 +66,7 @@ cp .env.example .env
 Before deployment, update at least:
 
 - `SECRET_KEY`
-- `CORS_ORIGINS`
+- `CORS_ORIGINS` (recommended JSON array format, for example `["http://150.158.43.80","http://localhost:5173"]`)
 - `DATABASE_URL` if you change database credentials
 
 Inside Docker, the database host is `postgres`, not `localhost`.
