@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     npc_scheduler_interval_seconds: int = 60
     npc_default_interval_minutes: int = 120
     npc_random_jitter_minutes: int = 45
+    message_stream_interval_seconds: int = 5
     app_timezone: str = "Asia/Shanghai"
 
     @field_validator("cors_origins", mode="before")
@@ -38,4 +39,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-

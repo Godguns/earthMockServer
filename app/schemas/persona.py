@@ -22,6 +22,19 @@ class PersonaUpsertRequest(BaseModel):
     npc_push_frequency_minutes: int = Field(default=120, ge=15, le=1440)
 
 
+class FrontendPersonaProfile(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    profileVersion: int = 1
+    boundAt: datetime | str | None = None
+    identity: dict = Field(default_factory=dict)
+    anchors: dict = Field(default_factory=dict)
+    saveModel: dict = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    signals: dict = Field(default_factory=dict)
+    rawAnswers: dict = Field(default_factory=dict)
+
+
 class PersonaRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -43,4 +56,3 @@ class PersonaRead(BaseModel):
     next_npc_push_at: datetime | None
     created_at: datetime
     updated_at: datetime
-

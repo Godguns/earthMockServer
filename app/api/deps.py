@@ -23,10 +23,7 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def get_current_user(
-    db: Session = Depends(get_db),
-    token: str = Depends(oauth2_scheme),
-) -> User:
+def get_user_from_token(db: Session, token: str) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -50,3 +47,10 @@ def get_current_user(
     if user is None or not user.is_active:
         raise credentials_exception
     return user
+
+
+def get_current_user(
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme),
+) -> User:
+    return get_user_from_token(db, token)

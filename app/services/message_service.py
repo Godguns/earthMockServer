@@ -30,11 +30,31 @@ def list_user_messages(
     limit: int = 50,
 ) -> list[MessageEvent]:
     query: Select[tuple[MessageEvent]] = select(MessageEvent).where(MessageEvent.user_id == user.id)
+    query = query.where(MessageEvent.delivery_status != MessageDeliveryStatus.pending)
     if channel:
         query = query.where(MessageEvent.channel == channel)
     if unread_only:
         query = query.where(MessageEvent.read_at.is_(None))
     query = query.order_by(MessageEvent.created_at.desc()).limit(limit)
+    return list(db.scalars(query).all())
+
+
+def list_new_user_messages(
+    db: Session,
+    user: User,
+    since: datetime | None = None,
+    channel: MessageChannel | None = None,
+    limit: int = 50,
+) -> list[MessageEvent]:
+    query: Select[tuple[MessageEvent]] = select(MessageEvent).where(
+        MessageEvent.user_id == user.id,
+        MessageEvent.delivery_status != MessageDeliveryStatus.pending,
+    )
+    if since:
+        query = query.where(MessageEvent.created_at > since)
+    if channel:
+        query = query.where(MessageEvent.channel == channel)
+    query = query.order_by(MessageEvent.created_at.asc()).limit(limit)
     return list(db.scalars(query).all())
 
 
@@ -211,4 +231,3 @@ def run_random_push_cycle(db: Session) -> int:
         generate_random_message_for_user(db, user)
         created_count += 1
     return created_count
-

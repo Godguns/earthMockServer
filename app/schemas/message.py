@@ -50,8 +50,8 @@ class MessageRead(BaseModel):
 
 class MessageListResponse(BaseModel):
     items: list[MessageRead]
+    server_time: datetime | None = None
 
 
 class RandomMessageResponse(BaseModel):
     created: list[MessageRead]
-

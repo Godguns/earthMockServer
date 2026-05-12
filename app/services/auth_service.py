@@ -32,8 +32,13 @@ def register_user(db: Session, payload: RegisterRequest) -> User:
     return user
 
 
-def authenticate_user(db: Session, email: str, password: str) -> User | None:
-    user = db.scalar(select(User).where(User.email == email))
+def authenticate_user(db: Session, identifier: str, password: str) -> User | None:
+    normalized_identifier = identifier.strip()
+    user = db.scalar(
+        select(User).where(
+            or_(User.email == normalized_identifier, User.username == normalized_identifier)
+        )
+    )
     if user is None:
         return None
     if not verify_password(password, user.hashed_password):

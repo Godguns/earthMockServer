@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.persona import PersonaProfile
 from app.models.user import User
-from app.schemas.persona import PersonaUpsertRequest
+from app.schemas.persona import FrontendPersonaProfile, PersonaUpsertRequest
 
 
 def get_or_create_persona(db: Session, user: User) -> PersonaProfile:
@@ -56,3 +56,103 @@ def upsert_persona(db: Session, user: User, payload: PersonaUpsertRequest) -> Pe
     db.refresh(persona)
     return persona
 
+
+def bind_frontend_persona(
+    db: Session,
+    user: User,
+    payload: FrontendPersonaProfile,
+) -> PersonaProfile:
+    persona = get_or_create_persona(db, user)
+    profile = payload.model_dump(mode="json")
+    identity = profile.get("identity") or {}
+    anchors = profile.get("anchors") or {}
+    save_model = profile.get("saveModel") or {}
+    signals = profile.get("signals") or {}
+    raw_answers = profile.get("rawAnswers") or {}
+
+    persona.display_name = identity.get("name") or raw_answers.get("playerName") or user.username
+    persona.archetype = _build_archetype(save_model, profile.get("tags") or [])
+    persona.world_context = _build_world_context(identity, anchors)
+    persona.backstory = _build_backstory(identity, anchors)
+    persona.system_prompt = _build_system_prompt()
+    persona.communication_style = _build_communication_style(signals)
+    persona.emotional_traits = _as_string_list(signals.get("pressureTriggers"))
+    persona.favorite_topics = _as_string_list(profile.get("tags"))
+    persona.boundaries = _as_string_list(signals.get("comfortZones"))
+    persona.relationship_goals = _as_string_list(signals.get("relationshipLens"))
+    persona.raw_settings = profile
+
+    if persona.npc_push_enabled and persona.next_npc_push_at is None:
+        persona.next_npc_push_at = datetime.now(UTC) + timedelta(
+            minutes=persona.npc_push_frequency_minutes
+        )
+
+    db.add(persona)
+    db.commit()
+    db.refresh(persona)
+    return persona
+
+
+def _as_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _build_archetype(save_model: dict, tags: list[str]) -> str | None:
+    if save_model:
+        parts = []
+        for key in ("social", "attribute", "vitality", "event"):
+            item = save_model.get(key) or {}
+            if item.get("label"):
+                parts.append(str(item["label"]))
+        if parts:
+            return " / ".join(parts)
+    if tags:
+        return " / ".join(tags[:3])
+    return None
+
+
+def _build_world_context(identity: dict, anchors: dict) -> str | None:
+    origin = anchors.get("origin") or {}
+    career = identity.get("careerStatus")
+    birthplace = origin.get("birthplace")
+    family = origin.get("familyType")
+    parts = [item for item in [birthplace, family, career] if item]
+    return " | ".join(str(item) for item in parts) or None
+
+
+def _build_backstory(identity: dict, anchors: dict) -> str | None:
+    origin = anchors.get("origin") or {}
+    soul = anchors.get("soul") or {}
+    body = anchors.get("body") or {}
+    lines = [
+        f"name: {identity.get('name')}" if identity.get("name") else None,
+        f"birth_date: {identity.get('birthDate')}" if identity.get("birthDate") else None,
+        f"family_expectation: {origin.get('familyExpectation')}"
+        if origin.get("familyExpectation")
+        else None,
+        f"fear: {soul.get('fear')}" if soul.get("fear") else None,
+        f"desire: {soul.get('desire')}" if soul.get("desire") else None,
+        f"relax_mode: {body.get('relaxMode')}" if body.get("relaxMode") else None,
+    ]
+    return "\n".join(line for line in lines if line) or None
+
+
+def _build_system_prompt() -> str:
+    return (
+        "Generate a personalized Earth Online experience for this player. "
+        "Prioritize persona.raw_settings.identity, anchors, saveModel and signals. "
+        "Keep the writing realistic, restrained and introspective."
+    )
+
+
+def _build_communication_style(signals: dict) -> str | None:
+    pressure = _as_string_list(signals.get("pressureTriggers"))
+    comfort = _as_string_list(signals.get("comfortZones"))
+    pieces = []
+    if pressure:
+        pieces.append(f"pressure_triggers: {' / '.join(pressure[:4])}")
+    if comfort:
+        pieces.append(f"comfort_zones: {' / '.join(comfort[:4])}")
+    return " | ".join(pieces) or None
