@@ -4,7 +4,7 @@ import random
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -21,6 +21,24 @@ from app.schemas.message import EventTriggerRequest
 from app.services.ai_service import NarrativeAIService
 from app.services.persona_service import get_or_create_persona
 
+MESSAGE_HISTORY_RETENTION_DAYS = 30
+
+
+def _message_history_cutoff(now: datetime | None = None) -> datetime:
+    return (now or datetime.now(UTC)) - timedelta(days=MESSAGE_HISTORY_RETENTION_DAYS)
+
+
+def prune_expired_messages(db: Session, user_id: UUID | None = None) -> int:
+    statement = delete(MessageEvent).where(MessageEvent.created_at < _message_history_cutoff())
+    if user_id is not None:
+        statement = statement.where(MessageEvent.user_id == user_id)
+
+    result = db.execute(statement)
+    deleted_count = result.rowcount or 0
+    if deleted_count:
+        db.commit()
+    return deleted_count
+
 
 def list_user_messages(
     db: Session,
@@ -29,12 +47,18 @@ def list_user_messages(
     unread_only: bool = False,
     limit: int = 50,
 ) -> list[MessageEvent]:
-    query: Select[tuple[MessageEvent]] = select(MessageEvent).where(MessageEvent.user_id == user.id)
-    query = query.where(MessageEvent.delivery_status != MessageDeliveryStatus.pending)
+    prune_expired_messages(db, user.id)
+
+    query: Select[tuple[MessageEvent]] = select(MessageEvent).where(
+        MessageEvent.user_id == user.id,
+        MessageEvent.delivery_status != MessageDeliveryStatus.pending,
+        MessageEvent.created_at >= _message_history_cutoff(),
+    )
     if channel:
         query = query.where(MessageEvent.channel == channel)
     if unread_only:
         query = query.where(MessageEvent.read_at.is_(None))
+
     query = query.order_by(MessageEvent.created_at.desc()).limit(limit)
     return list(db.scalars(query).all())
 
@@ -46,16 +70,28 @@ def list_new_user_messages(
     channel: MessageChannel | None = None,
     limit: int = 50,
 ) -> list[MessageEvent]:
+    prune_expired_messages(db, user.id)
+    cutoff = _message_history_cutoff()
+
     query: Select[tuple[MessageEvent]] = select(MessageEvent).where(
         MessageEvent.user_id == user.id,
         MessageEvent.delivery_status != MessageDeliveryStatus.pending,
+        MessageEvent.created_at >= cutoff,
     )
     if since:
-        query = query.where(MessageEvent.created_at > since)
+        query = query.where(MessageEvent.created_at > max(since, cutoff))
     if channel:
         query = query.where(MessageEvent.channel == channel)
-    query = query.order_by(MessageEvent.created_at.asc()).limit(limit)
-    return list(db.scalars(query).all())
+
+    if since:
+        query = query.order_by(MessageEvent.created_at.asc()).limit(limit)
+        return list(db.scalars(query).all())
+
+    recent_items = list(
+        db.scalars(query.order_by(MessageEvent.created_at.desc()).limit(limit)).all()
+    )
+    recent_items.reverse()
+    return recent_items
 
 
 def _build_message(
@@ -121,6 +157,7 @@ def _create_fanout_messages(
         )
         db.add(event)
         created.append(event)
+
     db.commit()
     for item in created:
         db.refresh(item)
@@ -135,6 +172,7 @@ def _schedule_next_random_push(persona: PersonaProfile) -> None:
 
 
 def generate_random_message_for_user(db: Session, user: User) -> list[MessageEvent]:
+    prune_expired_messages(db, user.id)
     persona = get_or_create_persona(db, user)
     message = NarrativeAIService.build_random_npc_message(persona)
     created = _create_fanout_messages(
@@ -158,6 +196,7 @@ def generate_random_message_for_user(db: Session, user: User) -> list[MessageEve
 
 
 def create_event_messages(db: Session, user: User, payload: EventTriggerRequest) -> list[MessageEvent]:
+    prune_expired_messages(db, user.id)
     persona = get_or_create_persona(db, user)
     generated = NarrativeAIService.build_event_message(persona, payload.trigger_name, payload.content)
     return _create_fanout_messages(
@@ -177,6 +216,63 @@ def create_event_messages(db: Session, user: User, payload: EventTriggerRequest)
     )
 
 
+def create_player_reply_ack(
+    db: Session,
+    user: User,
+    *,
+    content: str,
+    conversation_key: str | None = None,
+    sender_name: str | None = None,
+    title: str | None = None,
+    client_message_id: str | None = None,
+) -> list[MessageEvent]:
+    prune_expired_messages(db, user.id)
+    persona = get_or_create_persona(db, user)
+    summary = _build_persona_summary(persona, user)
+    reply_sender = sender_name or "Earth Online"
+    reply_title = title or f"{reply_sender} acknowledged your message"
+    effective_conversation_key = conversation_key or f"system:{reply_sender}"
+
+    player_messages = _create_fanout_messages(
+        db,
+        user_id=user.id,
+        channel_targets=[MessageChannel.chat],
+        source_type=MessageSourceType.system,
+        trigger_type=MessageTriggerType.manual,
+        title=reply_sender,
+        content=content,
+        sender_name=user.username,
+        conversation_key=effective_conversation_key,
+        payload={
+            "kind": "player_message",
+            "client_message_id": client_message_id,
+            "partner_name": reply_sender,
+        },
+        scheduled_for=None,
+    )
+
+    reply_content = f"AI能力还在完善中（收到你的消息：{content}；当前主要人格信息：{summary}）"
+    ack_messages = _create_fanout_messages(
+        db,
+        user_id=user.id,
+        channel_targets=[MessageChannel.notification, MessageChannel.chat],
+        source_type=MessageSourceType.system,
+        trigger_type=MessageTriggerType.manual,
+        title=reply_title,
+        content=reply_content,
+        sender_name=reply_sender,
+        conversation_key=effective_conversation_key,
+        payload={
+            "kind": "player_reply_ack",
+            "player_message": content,
+            "persona_summary": summary,
+            "reply_to_client_message_id": client_message_id,
+        },
+        scheduled_for=None,
+    )
+    return [*player_messages, *ack_messages]
+
+
 def mark_message_as_read(db: Session, user: User, message_id: UUID) -> MessageEvent | None:
     message = db.scalar(
         select(MessageEvent).where(MessageEvent.id == message_id, MessageEvent.user_id == user.id)
@@ -193,6 +289,7 @@ def mark_message_as_read(db: Session, user: User, message_id: UUID) -> MessageEv
 
 
 def deliver_due_messages(db: Session) -> int:
+    prune_expired_messages(db)
     now = datetime.now(UTC)
     items = list(
         db.scalars(
@@ -231,3 +328,29 @@ def run_random_push_cycle(db: Session) -> int:
         generate_random_message_for_user(db, user)
         created_count += 1
     return created_count
+
+
+def _build_persona_summary(persona: PersonaProfile, user: User) -> str:
+    raw_settings = persona.raw_settings if isinstance(persona.raw_settings, dict) else {}
+    identity = raw_settings.get("identity") or {}
+    anchors = raw_settings.get("anchors") or {}
+    tags = raw_settings.get("tags") or []
+    save_model = raw_settings.get("saveModel") or {}
+    soul = anchors.get("soul") or {}
+    finance = anchors.get("finance") or {}
+
+    parts = [
+        identity.get("name") or persona.display_name or user.username,
+        identity.get("careerStatus"),
+        soul.get("desire"),
+        finance.get("cashFlow"),
+    ]
+
+    for key in ("social", "attribute", "vitality", "event"):
+        label = (save_model.get(key) or {}).get("label")
+        if label:
+            parts.append(label)
+
+    parts.extend(tags[:3] if isinstance(tags, list) else [])
+    normalized_parts = [str(item).strip() for item in parts if str(item).strip()]
+    return " | ".join(normalized_parts[:8]) or user.username

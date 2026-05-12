@@ -27,6 +27,14 @@ class EventTriggerRequest(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
+class PlayerReplyRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+    conversation_key: str | None = Field(default=None, max_length=120)
+    sender_name: str | None = Field(default=None, max_length=100)
+    title: str | None = Field(default=None, max_length=200)
+    client_message_id: str | None = Field(default=None, max_length=160)
+
+
 class MessageRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

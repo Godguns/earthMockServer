@@ -18,9 +18,11 @@ from app.schemas.message import (
     EventTriggerRequest,
     MessageListResponse,
     MessageRead,
+    PlayerReplyRequest,
     RandomMessageResponse,
 )
 from app.services.message_service import (
+    create_player_reply_ack,
     create_event_messages,
     deliver_due_messages,
     generate_random_message_for_user,
@@ -144,6 +146,26 @@ def trigger_event_message(
     current_user: User = Depends(get_current_user),
 ) -> RandomMessageResponse:
     created_messages = create_event_messages(db, current_user, payload)
+    return RandomMessageResponse(
+        created=[MessageRead.model_validate(item) for item in created_messages]
+    )
+
+
+@router.post("/reply", response_model=RandomMessageResponse, status_code=status.HTTP_201_CREATED)
+def reply_to_message(
+    payload: PlayerReplyRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> RandomMessageResponse:
+    created_messages = create_player_reply_ack(
+        db,
+        current_user,
+        content=payload.content,
+        conversation_key=payload.conversation_key,
+        sender_name=payload.sender_name,
+        title=payload.title,
+        client_message_id=payload.client_message_id,
+    )
     return RandomMessageResponse(
         created=[MessageRead.model_validate(item) for item in created_messages]
     )
