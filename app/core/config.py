@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     npc_random_jitter_minutes: int = 45
     message_stream_interval_seconds: int = 5
     app_timezone: str = "Asia/Shanghai"
+    dify_base_url: str = "http://150.158.43.80/v1"
+    dify_timeout_seconds: float = 45.0
+    dify_npc_mother_api_key: str | None = None
+    dify_npc_mother_workflow_id: str | None = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod

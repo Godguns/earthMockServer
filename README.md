@@ -9,6 +9,12 @@ It currently provides:
 - random NPC push simulation
 - event-triggered message creation
 
+## Dify NPC guide
+
+For the Dify NPC Chatflow setup handbook, see:
+
+- [DIFY_NPC_CHATFLOW_GUIDE.md](/C:/Users/admin/Desktop/个人资料/online/earthMockServer/DIFY_NPC_CHATFLOW_GUIDE.md)
+
 ## Stack
 
 - Python 3.11

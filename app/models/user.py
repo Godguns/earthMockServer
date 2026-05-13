@@ -28,4 +28,8 @@ class User(Base, TimestampMixin):
         back_populates="user",
         cascade="all, delete-orphan",
     )
-
+    npc_sessions = relationship(
+        "NpcConversationSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
