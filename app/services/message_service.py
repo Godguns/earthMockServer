@@ -30,6 +30,8 @@ from app.services.npc_profiles import (
     get_npc_profile,
 )
 from app.services.persona_service import get_or_create_persona
+from app.services.story_service import build_proactive_story_hint, get_or_create_story_progress
+from app.services.world_service import build_world_event_hint, maybe_emit_world_push
 
 MESSAGE_HISTORY_RETENTION_DAYS = 30
 MIN_PROACTIVE_MESSAGE_GAP = timedelta(minutes=2)
@@ -578,6 +580,8 @@ def _build_mother_npc_message_events(
 def generate_random_message_for_user(db: Session, user: User) -> list[MessageEvent]:
     prune_expired_messages(db, user.id)
     persona = get_or_create_persona(db, user)
+    story_progress = get_or_create_story_progress(db, user)
+    maybe_emit_world_push(db, user, persona)
     profile = get_npc_profile(MOTHER_NPC_KEY)
     session = _get_or_create_npc_session(db, user=user, npc_key=profile.key)
 
@@ -589,7 +593,19 @@ def generate_random_message_for_user(db: Session, user: User) -> list[MessageEve
         return []
 
     resolved_trigger = _resolve_mother_trigger(session)
-    runtime_context = _build_mother_runtime_context(db, user=user, session=session)
+    runtime_context = _build_mother_runtime_context(
+        db,
+        user=user,
+        session=session,
+        event_hint=" | ".join(
+            item
+            for item in [
+                build_proactive_story_hint(story_progress),
+                build_world_event_hint(db, user),
+            ]
+            if item
+        ),
+    )
     inputs = build_mother_dify_inputs(
         persona,
         user,
