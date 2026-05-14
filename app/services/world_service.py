@@ -11,8 +11,6 @@ from app.models.user import User
 from app.models.world import PlayerWorldEvent, PlayerWorldState
 from app.schemas.message import EventTriggerRequest
 from app.schemas.world import WorldStateRead
-from app.services.message_service import create_event_messages
-
 
 DEFAULT_ACTIONS = [
     "处理账单",
@@ -265,6 +263,7 @@ def maybe_emit_world_push(db: Session, user: User, persona: PersonaProfile | Non
     if top_event.payload.get("message_emitted"):
         return
 
+    from app.services.message_service import create_event_messages  # noqa: PLC0415 (lazy import to break circular dep)
     create_event_messages(
         db,
         user,
