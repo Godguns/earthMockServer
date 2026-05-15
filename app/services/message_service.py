@@ -36,6 +36,10 @@ from app.services.world_service import build_world_event_hint, maybe_emit_world_
 MESSAGE_HISTORY_RETENTION_DAYS = 30
 MIN_PROACTIVE_MESSAGE_GAP = timedelta(minutes=2)
 MOTHER_NPC_KEY = "mother"
+MAX_UNANSWERED_PROACTIVE_PUSHES_PER_DAY = 3
+PROACTIVE_DAY_META_KEY = "proactive_day"
+PROACTIVE_UNANSWERED_COUNT_META_KEY = "proactive_unanswered_count"
+PROACTIVE_REMINDER_SENT_META_KEY = "proactive_reply_reminder_sent"
 
 
 def _message_history_cutoff(now: datetime | None = None) -> datetime:
@@ -190,6 +194,11 @@ def _app_now() -> datetime:
         return datetime.now(ZoneInfo(settings.app_timezone))
     except Exception:
         return datetime.now(UTC)
+
+
+def _app_day_key(now_local: datetime | None = None) -> str:
+    resolved_now = now_local or _app_now()
+    return resolved_now.strftime("%Y-%m-%d")
 
 
 def _weekday_label(now_local: datetime) -> str:
@@ -406,6 +415,19 @@ def _fallback_mother_response(
     }
 
 
+def _build_reply_reminder_response() -> dict[str, Any]:
+    return {
+        "title": "濡堝",
+        "content": "浠婂ぉ缁欎綘鐣欎簡鍑犳娑堟伅锛岃繕娌＄瓑鍒颁綘鍥炲銆傜瓑浣犵湅鍒颁簡璁板緱鍥炴垜涓€澹帮紝浠婂ぉ灏卞厛涓嶆墦鎵颁綘浜嗐€?",
+        "should_notify": True,
+        "emotion": "concerned",
+        "provider": "reply_reminder",
+        "dify_message_id": None,
+        "dify_task_id": None,
+        "dify_conversation_id": None,
+    }
+
+
 def _request_mother_response(
     *,
     profile,
@@ -466,6 +488,9 @@ def _update_npc_session_from_player(
     meta = dict(session.meta or {})
     meta["last_player_message_at"] = now.isoformat()
     meta["last_player_message_preview"] = content[:80]
+    meta[PROACTIVE_DAY_META_KEY] = _app_day_key()
+    meta[PROACTIVE_UNANSWERED_COUNT_META_KEY] = 0
+    meta[PROACTIVE_REMINDER_SENT_META_KEY] = False
     session.last_message_at = now
     session.last_player_message = content
     session.meta = meta
@@ -500,6 +525,62 @@ def _update_npc_session_from_npc(
     db.add(session)
     db.commit()
     db.refresh(session)
+
+
+def _read_proactive_limit_state(
+    session: NpcConversationSession,
+) -> tuple[dict[str, Any], int, bool, bool]:
+    meta = dict(session.meta or {})
+    today_key = _app_day_key()
+    changed = False
+
+    if meta.get(PROACTIVE_DAY_META_KEY) != today_key:
+        meta[PROACTIVE_DAY_META_KEY] = today_key
+        meta[PROACTIVE_UNANSWERED_COUNT_META_KEY] = 0
+        meta[PROACTIVE_REMINDER_SENT_META_KEY] = False
+        changed = True
+
+    unanswered_count = int(meta.get(PROACTIVE_UNANSWERED_COUNT_META_KEY) or 0)
+    reminder_sent = bool(meta.get(PROACTIVE_REMINDER_SENT_META_KEY, False))
+    return meta, unanswered_count, reminder_sent, changed
+
+
+def _persist_session_meta(db: Session, session: NpcConversationSession, meta: dict[str, Any]) -> None:
+    session.meta = meta
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+
+
+def _record_proactive_push(db: Session, session: NpcConversationSession) -> None:
+    meta, unanswered_count, reminder_sent, _ = _read_proactive_limit_state(session)
+    meta[PROACTIVE_UNANSWERED_COUNT_META_KEY] = unanswered_count + 1
+    meta[PROACTIVE_REMINDER_SENT_META_KEY] = reminder_sent
+    _persist_session_meta(db, session, meta)
+
+
+def _record_reply_reminder_sent(db: Session, session: NpcConversationSession) -> None:
+    meta, unanswered_count, _, _ = _read_proactive_limit_state(session)
+    meta[PROACTIVE_UNANSWERED_COUNT_META_KEY] = max(
+        unanswered_count,
+        MAX_UNANSWERED_PROACTIVE_PUSHES_PER_DAY,
+    )
+    meta[PROACTIVE_REMINDER_SENT_META_KEY] = True
+    _persist_session_meta(db, session, meta)
+
+
+def _should_send_reply_reminder(db: Session, session: NpcConversationSession) -> bool:
+    meta, unanswered_count, reminder_sent, changed = _read_proactive_limit_state(session)
+    if changed:
+        _persist_session_meta(db, session, meta)
+    return unanswered_count >= MAX_UNANSWERED_PROACTIVE_PUSHES_PER_DAY and not reminder_sent
+
+
+def _is_proactive_push_blocked(db: Session, session: NpcConversationSession) -> bool:
+    meta, unanswered_count, reminder_sent, changed = _read_proactive_limit_state(session)
+    if changed:
+        _persist_session_meta(db, session, meta)
+    return unanswered_count >= MAX_UNANSWERED_PROACTIVE_PUSHES_PER_DAY and reminder_sent
 
 
 def _should_skip_proactive_push(session: NpcConversationSession) -> bool:
@@ -592,6 +673,38 @@ def generate_random_message_for_user(db: Session, user: User) -> list[MessageEve
             db.commit()
         return []
 
+    if _is_proactive_push_blocked(db, session):
+        if persona.npc_push_enabled:
+            _schedule_next_random_push(persona)
+            db.add(persona)
+            db.commit()
+        return []
+
+    if _should_send_reply_reminder(db, session):
+        reminder_response = _build_reply_reminder_response()
+        _update_npc_session_from_npc(
+            db,
+            session=session,
+            trigger_type="reply_reminder",
+            response=reminder_response,
+        )
+        created = _build_mother_npc_message_events(
+            db,
+            user=user,
+            profile=profile,
+            trigger_type=MessageTriggerType.random,
+            response=reminder_response,
+            include_notification=True,
+            payload_kind="npc_reply_reminder",
+            resolved_trigger="reply_reminder",
+        )
+        _record_reply_reminder_sent(db, session)
+        if persona.npc_push_enabled:
+            _schedule_next_random_push(persona)
+            db.add(persona)
+            db.commit()
+        return created
+
     resolved_trigger = _resolve_mother_trigger(session)
     runtime_context = _build_mother_runtime_context(
         db,
@@ -628,6 +741,7 @@ def generate_random_message_for_user(db: Session, user: User) -> list[MessageEve
         trigger_type=resolved_trigger,
         response=response,
     )
+    _record_proactive_push(db, session)
 
     created = _build_mother_npc_message_events(
         db,

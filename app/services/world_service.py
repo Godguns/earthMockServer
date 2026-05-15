@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.message import MessageChannel, MessageSourceType
@@ -12,13 +10,20 @@ from app.models.world import PlayerWorldEvent, PlayerWorldState
 from app.schemas.message import EventTriggerRequest
 from app.schemas.world import WorldStateRead
 
+ACTION_PROCESS_BILL = "处理账单"
+ACTION_REST = "早点休息"
+ACTION_REPLY_MOTHER = "给母亲回消息"
+ACTION_GO_OUT = "出去走走"
+ACTION_COMMUNICATE = "认真沟通"
+ACTION_GRAB_CHANCE = "接住机会"
+
 DEFAULT_ACTIONS = [
-    "处理账单",
-    "早点休息",
-    "给母亲回消息",
-    "出去走走",
-    "认真沟通",
-    "接住机会",
+    ACTION_PROCESS_BILL,
+    ACTION_REST,
+    ACTION_REPLY_MOTHER,
+    ACTION_GO_OUT,
+    ACTION_COMMUNICATE,
+    ACTION_GRAB_CHANCE,
 ]
 
 
@@ -109,7 +114,7 @@ def seed_world_events(db: Session, user: User, state: PlayerWorldState) -> None:
             "source": "房东",
             "priority": "high",
             "due_in": "3天",
-            "consequence": "若继续拖延，焦虑会上升，母亲更可能主动过问。",
+            "consequence": "如果继续拖延，焦虑会上升，母亲也更可能主动过问。",
         },
         {
             "event_key": "sleep_debt",
@@ -141,34 +146,42 @@ def seed_world_events(db: Session, user: User, state: PlayerWorldState) -> None:
 
 def apply_world_action(db: Session, user: User, action_key: str) -> WorldStateRead:
     state = get_or_create_world_state(db, user)
+    rent_due_event = _get_active_event_by_key(db, user, "rent_due")
 
-    if action_key == "处理账单":
-        state.money_balance -= 860
-        state.money_pressure = clamp01(state.money_pressure - 0.12)
-        state.mood_anxiety = clamp01(state.mood_anxiety - 0.05)
-        state.mood_stability = clamp01(state.mood_stability + 0.04)
-        _resolve_event_by_key(db, user, "rent_due")
-    elif action_key == "早点休息":
+    if action_key == ACTION_PROCESS_BILL:
+        if rent_due_event:
+            state.money_balance -= 860
+            state.money_pressure = clamp01(state.money_pressure - 0.12)
+            state.mood_anxiety = clamp01(state.mood_anxiety - 0.05)
+            state.mood_stability = clamp01(state.mood_stability + 0.04)
+            state.deadline_label = "房租已处理，短期稳定"
+            _resolve_event_by_key(db, user, "rent_due")
+        else:
+            state.mood_stability = clamp01(state.mood_stability + 0.01)
+            state.mood_anxiety = clamp01(state.mood_anxiety - 0.01)
+    elif action_key == ACTION_REST:
         state.health_energy = clamp01(state.health_energy + 0.1)
         state.health_sleep = clamp01(state.health_sleep + 0.14)
         state.mood_anxiety = clamp01(state.mood_anxiety - 0.04)
         state.mood_stability = clamp01(state.mood_stability + 0.05)
         _resolve_event_by_key(db, user, "sleep_debt")
-    elif action_key == "给母亲回消息":
+    elif action_key == ACTION_REPLY_MOTHER:
         state.relation_mother = clamp01(state.relation_mother + 0.08)
         state.mood_loneliness = clamp01(state.mood_loneliness - 0.05)
         state.mood_stability = clamp01(state.mood_stability + 0.03)
         _resolve_event_by_key(db, user, "mother_attention")
-    elif action_key == "出去走走":
+        _resolve_event_by_key(db, user, "mother_distance")
+    elif action_key == ACTION_GO_OUT:
         state.health_energy = clamp01(state.health_energy + 0.06)
         state.mood_stability = clamp01(state.mood_stability + 0.05)
         state.mood_loneliness = clamp01(state.mood_loneliness - 0.04)
-    elif action_key == "认真沟通":
+    elif action_key == ACTION_COMMUNICATE:
         state.relation_mother = clamp01(state.relation_mother + 0.1)
         state.relation_friends = clamp01(state.relation_friends + 0.04)
         state.mood_stability = clamp01(state.mood_stability + 0.04)
         state.mood_anxiety = clamp01(state.mood_anxiety - 0.03)
-    elif action_key == "接住机会":
+        _resolve_event_by_key(db, user, "mother_distance")
+    elif action_key == ACTION_GRAB_CHANCE:
         state.money_balance += 260
         state.money_pressure = clamp01(state.money_pressure - 0.04)
         state.health_energy = clamp01(state.health_energy - 0.03)
@@ -204,7 +217,7 @@ def ensure_state_driven_events(db: Session, user: User, state: PlayerWorldState)
                 "source": "系统",
                 "priority": "high",
                 "due_in": "48小时",
-                "consequence": "若继续下降，将更频繁触发账单与机会事件。",
+                "consequence": "如果继续下滑，将更频繁触发账单与机会事件。",
             }
         )
 
@@ -218,7 +231,7 @@ def ensure_state_driven_events(db: Session, user: User, state: PlayerWorldState)
                 "source": "身体",
                 "priority": "medium",
                 "due_in": "今晚",
-                "consequence": "若不恢复，后续工作类选择收益会下降。",
+                "consequence": "如果不恢复，后续工作类选择收益会下降。",
             }
         )
 
@@ -263,7 +276,8 @@ def maybe_emit_world_push(db: Session, user: User, persona: PersonaProfile | Non
     if top_event.payload.get("message_emitted"):
         return
 
-    from app.services.message_service import create_event_messages  # noqa: PLC0415 (lazy import to break circular dep)
+    from app.services.message_service import create_event_messages  # noqa: PLC0415
+
     create_event_messages(
         db,
         user,
@@ -319,14 +333,18 @@ def apply_story_world_effects(db: Session, user: User, world_effects: dict | Non
     ensure_state_driven_events(db, user, state)
 
 
-def _resolve_event_by_key(db: Session, user: User, event_key: str) -> None:
-    event = db.scalar(
+def _get_active_event_by_key(db: Session, user: User, event_key: str) -> PlayerWorldEvent | None:
+    return db.scalar(
         select(PlayerWorldEvent).where(
             PlayerWorldEvent.user_id == user.id,
             PlayerWorldEvent.event_key == event_key,
             PlayerWorldEvent.status == "active",
         )
     )
+
+
+def _resolve_event_by_key(db: Session, user: User, event_key: str) -> None:
+    event = _get_active_event_by_key(db, user, event_key)
     if not event:
         return
 
@@ -348,7 +366,7 @@ def _build_world_journal(state: PlayerWorldState, events: list[PlayerWorldEvent]
             {
                 "id": "journal-event",
                 "label": "焦点事件",
-                "text": f"当前最值得关注的是「{events[0].title}」。",
+                "text": f"当前最值得关注的是《{events[0].title}》。",
             }
         )
     return journal[:3]

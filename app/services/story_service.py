@@ -490,6 +490,7 @@ def advance_story_choice(
         history.append(next_scene.key)
         flags["scene_history"] = history[-12:]
     else:
+        progress.current_scene_key = None
         progress.completed_at = datetime.now(UTC)
         flags["scene_history"] = list(flags.get("scene_history") or [])
 
